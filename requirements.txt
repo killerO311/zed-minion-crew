@@ -1,4 +1,3 @@
-langgraph>=0.2.0
-langchain-openai>=0.2.0
-nautilus-trader>=1.200.0
-flask>=3.0.0
+yfinance>=0.2.40
+pandas>=2.0.0
+numpy>=1.24.0
