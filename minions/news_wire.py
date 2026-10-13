@@ -3,7 +3,8 @@
 Pulls breaking headlines from free RSS feeds, detects catalyst keywords,
 scores catalyst strength 0-40, and hands the score to scoring_engine.py.
 
-Sources: Google News RSS (no key), Yahoo Finance news per ticker.
+Sources: Google News RSS, Yahoo Finance news, Benzinga, MarketWatch,
+CNBC, Seeking Alpha, Motley Fool, SEC EDGAR (8-K filings), StockTwits.
 No paid APIs. If a feed is down, that ticker just scores lower.
 """
 
@@ -56,7 +57,7 @@ class Catalyst:
 
 
 def _fetch_rss(url: str, timeout: int = 10) -> list[dict[str, Any]]:
-    """Fetch and parse an RSS/Atom feed. Returns list of {title, published, link}."""
+    """Fetch and parse an RSS or Atom feed. Returns list of {title, published, link}."""
     try:
         req = Request(url, headers={"User-Agent": "zed-minion-crew/0.1"})
         with urlopen(req, timeout=timeout) as resp:
@@ -100,7 +101,7 @@ def _score_headline(text: str) -> tuple[float, str]:
     """Score one headline. Returns (score 0-40, direction)."""
     lower = text.lower()
     bull = sum(w for term, w in BULLISH_TERMS.items() if term in lower)
-    bear = sum(abs(w) for term, w in BEARISH_TERMS.items() if term in lower)
+        bear = sum(abs(w) for term, w in BEARISH_TERMS.items() if term in lower)
     macro = sum(w for term, w in MACRO_TERMS.items() if term.lower() in lower)
 
     raw = bull - bear + macro
@@ -122,12 +123,21 @@ class NewsWire:
         "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
     )
     YAHOO_NEWS_URL = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
+    BENZINGA_URL = "https://www.benzinga.com/feed"
+    MARKETWATCH_URL = "https://feeds.marketwatch.com/marketwatch/realtimeheadlines/"
+    CNBC_URL = "https://www.cnbc.com/id/100003114/device/rss/rss.html"
+    SEEKING_ALPHA_URL = "https://seekingalpha.com/feed.xml"
+    MOTLEY_FOOL_URL = "https://www.fool.com/a/feeds/foolwatch"
+    EDGAR_URL = (
+        "https://efts.sec.gov/LATEST/search-index?q=%22{ticker}%22&forms=8-K&dateRange=custom&startdt={start}&enddt={end}"
+    )
+    STOCKTWITS_URL = "https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json"
 
     def __init__(self, window_minutes: int = 60):
         self._window = window_minutes
 
     def scan_ticker(self, ticker: str) -> list[Catalyst]:
-        """Scan Google News + Yahoo Finance RSS for one ticker."""
+        """Scan all sources for one ticker."""
         ticker = ticker.upper().strip()
         results: list[Catalyst] = []
 
@@ -152,6 +162,130 @@ class NewsWire:
             if score > 0:
                 results.append(Catalyst(ticker, item["title"], "yahoo_finance",
                                         mins, score, direction))
+
+        # Benzinga top stories
+        for item in _fetch_rss(self.BENZINGA_URL):
+            if ticker not in item["title"].upper():
+                continue
+            mins = _minutes_ago(item["published"])
+            if mins > self._window:
+                continue
+            score, direction = _score_headline(item["title"])
+            if score > 0:
+                results.append(Catalyst(ticker, item["title"], "benzinga",
+                                        mins, score, direction))
+
+        # MarketWatch realtime headlines
+        for item in _fetch_rss(self.MARKETWATCH_URL):
+            if ticker not in item["title"].upper():
+                continue
+            mins = _minutes_ago(item["published"])
+            if mins > self._window:
+                continue
+            score, direction = _score_headline(item["title"])
+            if score > 0:
+                results.append(Catalyst(ticker, item["title"], "marketwatch",
+                                        mins, score, direction))
+
+        # CNBC top news
+        for item in _fetch_rss(self.CNBC_URL):
+            if ticker not in item["title"].upper():
+                continue
+            mins = _minutes_ago(item["published"])
+            if mins > self._window:
+                continue
+            score, direction = _score_headline(item["title"])
+            if score > 0:
+                results.append(Catalyst(ticker, item["title"], "cnbc",
+                                        mins, score, direction))
+
+        # Seeking Alpha feed
+        for item in _fetch_rss(self.SEEKING_ALPHA_URL):
+            if ticker not in item["title"].upper():
+                continue
+            mins = _minutes_ago(item["published"])
+            if mins > self._window:
+                continue
+            score, direction = _score_headline(item["title"])
+            if score > 0:
+                results.append(Catalyst(ticker, item["title"], "seeking_alpha",
+                                        mins, score, direction))
+
+        # Motley Fool
+        for item in _fetch_rss(self.MOTLEY_FOOL_URL):
+            if ticker not in item["title"].upper():
+                continue
+            mins = _minutes_ago(item["published"])
+            if mins > self._window:
+                continue
+            score, direction = _score_headline(item["title"])
+            if score > 0:
+                results.append(Catalyst(ticker, item["title"], "motley_fool",
+                                        mins, score, direction))
+
+        # SEC EDGAR 8-K filings (JSON API, not RSS — handled separately)
+        try:
+            today = datetime.now(timezone.utc).date()
+            start = (today - timedelta(days=7)).isoformat()
+            end = today.isoformat()
+            edgar_url = self.EDGAR_URL.format(ticker=ticker, start=start, end=end)
+            req = Request(edgar_url, headers={"User-Agent": "zed-minion-crew/0.1 research@example.com"})
+            with urlopen(req, timeout=10) as resp:
+                data = resp.read()
+            import json
+            payload = json.loads(data)
+            for hit in payload.get("hits", {}).get("hits", []):
+                src = hit.get("_source", {})
+                title = src.get("display_names", [""])[0] if src.get("display_names") else ""
+                filed = src.get("file_date", "")
+                # file_date is YYYY-MM-DD; treat as start of day UTC
+                try:
+                    fd = datetime.fromisoformat(filed).replace(tzinfo=timezone.utc)
+                    mins = max(0, int((datetime.now(timezone.utc) - fd).total_seconds() / 60))
+                except Exception:
+                    mins = 999
+                if mins > self._window:
+                    continue
+                # 8-K is a hard catalyst — base score 15, then keyword-adjust
+                score, direction = _score_headline(title)
+                score = max(score, 15.0)
+                results.append(Catalyst(ticker, f"8-K: {title}", "sec_edgar",
+                                        mins, score, direction))
+        except Exception as e:
+            logger.warning("EDGAR fetch failed for %s: %s", ticker, e)
+
+        # StockTwits symbol stream (JSON, not RSS)
+        try:
+            st_url = self.STOCKTWITS_URL.format(ticker=ticker)
+            req = Request(st_url, headers={"User-Agent": "zed-minion-crew/0.1"})
+            with urlopen(req, timeout=10) as resp:
+                data = resp.read()
+            import json
+            payload = json.loads(data)
+            for msg in payload.get("messages", [])[:20]:
+                body = msg.get("body", "")
+                created = msg.get("created_at", "")
+                try:
+                    dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                    mins = max(0, int((datetime.now(timezone.utc) - dt).total_seconds() / 60))
+                except Exception:
+                    mins = 999
+                if mins > self._window:
+                    continue
+                score, direction = _score_headline(body)
+                # StockTwits sentiment tag as a bonus
+                sentiment = msg.get("entities", {}).get("sentiment", {})
+                if sentiment.get("basic") == "Bullish":
+                    score = min(40.0, score + 3)
+                    direction = "bullish"
+                elif sentiment.get("basic") == "Bearish":
+                    score = max(0.0, score - 3)
+                    direction = "bearish"
+                if score > 0:
+                    results.append(Catalyst(ticker, body[:120], "stocktwits",
+                                            mins, score, direction))
+        except Exception as e:
+            logger.warning("StockTwits fetch failed for %s: %s", ticker, e)
 
         # Deduplicate by headline text
         seen: set[str] = set()
@@ -183,4 +317,4 @@ if __name__ == "__main__":
             top = max(cats, key=lambda c: c.score)
             print(f"{sym}: best catalyst {top.score:.0f} ({top.direction}) — {top.headline[:90]}")
         else:
-            print(f"{sym}: no catalyst headlines in window")
+        print(f"{sym}: no catalyst headlines in window")
