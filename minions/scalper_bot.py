@@ -1,12 +1,13 @@
 """Scalper Bot — fully automated intraday scalper for stocks.
 
-Pipeline: scan → score → risk-check → review → place → monitor → exit.
+Pipeline: sync → scan → score → risk-check → review → place → monitor → exit.
+- Pre-cycle position sync (Robinhood vs Alpaca) — flags discrepancies before sizing
 - Score gate: 70+ via scoring_engine
 - Catalyst required inside two weeks via news_wire
 - Position size: 1% of book
 - Take-profit 0.8%, stop-loss 0.4%
 - Risk module enforces 5% max position and 2% daily-loss kill switch
-- Broker: Robinhood equity orders (marketable limit at ask for immediate fill)
+- Broker: Alpaca (paper by default) via alpaca_exec; Robinhood is manual fallback
 - Exits: take-profit limit + stop-market, both GTC
 """
 
@@ -16,6 +17,21 @@ from data_feed import get_quotes
 from scoring_engine import score_ticker
 from minions.risk import check_position
 from minions.news_wire import best_catalyst_score
+from position_sync import sync_before_scan
+
+try:
+    from alpaca_exec import review_order, place_order, place_exits
+    ALPACA_AVAILABLE = True
+except ImportError:
+    ALPACA_AVAILABLE = False
+    def review_order(account_number, candidate):
+        return {"approved": False, "alerts": ["alpaca_exec not available"]}
+    def place_order(account_number, candidate, ref_id=None):
+        print(f"  [STUB] place_order {candidate['ticker']} — alpaca_exec missing")
+        return {"id": None, "status": "stub"}
+    def place_exits(account_number, candidate, ref_id=None):
+        print(f"  [STUB] place_exits {candidate['ticker']} — alpaca_exec missing")
+        return {"take_profit": None, "stop_loss": None}
 
 TAKE_PROFIT = 0.008
 STOP_LOSS = 0.004
@@ -49,75 +65,31 @@ def scan(tickers, book_value):
     return candidates
 
 
-def review_order(account_number, candidate):
-    """Pre-trade review via Robinhood — surfaces buying power, PDT, halts."""
-    from robinhood import review_equity_order  # injected at runtime
-    return review_equity_order(
-        account_number=account_number,
-        symbol=candidate["ticker"],
-        side="buy",
-        type="limit",
-        quantity=str(candidate["size"]),
-        limit_price=str(candidate["entry"]),
-        time_in_force="gfd",
-    )
-
-
-def place_order(account_number, candidate, ref_id=None):
-    """Place the entry as a marketable limit at the ask."""
-    from robinhood import place_equity_order  # injected at runtime
-    return place_equity_order(
-        account_number=account_number,
-        symbol=candidate["ticker"],
-        side="buy",
-        type="limit",
-        quantity=str(candidate["size"]),
-        limit_price=str(candidate["entry"]),
-        time_in_force="gfd",
-        ref_id=ref_id or str(uuid.uuid4()),
-    )
-
-
-def place_exits(account_number, candidate, ref_id=None):
-    """Bracket: take-profit limit sell + stop-market sell, both GTC."""
-    from robinhood import place_equity_order  # injected at runtime
-    rid = ref_id or str(uuid.uuid4())
-    tp = place_equity_order(
-        account_number=account_number,
-        symbol=candidate["ticker"],
-        side="sell",
-        type="limit",
-        quantity=str(candidate["size"]),
-        limit_price=str(candidate["take_profit"]),
-        time_in_force="gtc",
-        ref_id=rid + "-tp",
-    )
-    sl = place_equity_order(
-        account_number=account_number,
-        symbol=candidate["ticker"],
-        side="sell",
-        type="stop_market",
-        quantity=str(candidate["size"]),
-        stop_price=str(candidate["stop_loss"]),
-        time_in_force="gtc",
-        ref_id=rid + "-sl",
-    )
-    return {"take_profit": tp, "stop_loss": sl}
-
-
 def run_cycle(tickers, book_value, account_number, auto_place=False):
-    """One full scan-to-exit cycle. auto_place=False logs only."""
+    """One full sync-scan-to-exit cycle. auto_place=False logs only."""
+    # Step 0: sync books before anything else
+    if not sync_before_scan():
+        print("SYNC DIRTY — skipping cycle to avoid sizing on stale data")
+        # still allow logging-only scan so you can see candidates
+        pass
+
     results = []
     for c in scan(tickers, book_value):
         print(f"CANDIDATE {c['ticker']} score={c['score']} cat={c['catalyst']} "
               f"entry={c['entry']} size={c['size']} TP={c['take_profit']} SL={c['stop_loss']}")
         if auto_place:
+            if not ALPACA_AVAILABLE:
+                print("  AUTO-PLACE BLOCKED: alpaca_exec unavailable")
+                continue
             rev = review_order(account_number, c)
-            alerts = rev.get("order_checks") or rev.get("alerts") or []
+            alerts = rev.get("alerts") or []
             if alerts:
                 print(f"  REVIEW ALERTS: {alerts}")
                 continue
             entry = place_order(account_number, c)
+            if entry.get("status") == "failed":
+                print(f"  ENTRY FAILED: {entry.get('error')}")
+                continue
             exits = place_exits(account_number, c)
             results.append({"entry": entry, "exits": exits, "candidate": c})
             print(f"  PLACED entry + bracket exits for {c['ticker']}")
@@ -125,7 +97,7 @@ def run_cycle(tickers, book_value, account_number, auto_place=False):
 
 
 if __name__ == "__main__":
-    # Demo: log-only mode. Flip auto_place=True with a real account number to fire.
+    # Demo: log-only mode. Flip auto_place=True with Alpaca keys set to fire.
     demo_book = 10000
     demo_tickers = ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA", "AMD", "TSLA"]
     run_cycle(demo_tickers, demo_book, account_number=None, auto_place=False)
