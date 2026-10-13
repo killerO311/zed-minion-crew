@@ -1,16 +1,23 @@
-"""Bot 2 — Research
-
-Deep dives on any name Zed flags — debt, shorts, catalysts, full rabbit hole.
-"""
+from data_feed import get_quotes
+from minions.news_wire import best_catalyst_score
 
 
-def deep_dive(ticker: str) -> dict:
-    """Pull debt load, short interest, catalysts, and valuation for one name."""
+def deep_dive(ticker):
+    """Valuation fields from the feed plus catalyst context from news wire."""
+    q = get_quotes(ticker)
+    cat = best_catalyst_score(ticker)
+    if not q:
+        return None
     return {
         "ticker": ticker,
-        "debt": None,
-        "short_interest_pct": None,
-        "catalysts": [],
-        "valuation": None,
-        "notes": "",
+        "price": q.get("price"),
+        "volume": q.get("volume"),
+        "rsi": q.get("rsi"),
+        "macd": q.get("macd"),
+        "range_52w": q.get("range_52w"),
+        "catalyst_score": cat,
     }
+
+
+if __name__ == "__main__":
+    print(deep_dive("AAPL"))

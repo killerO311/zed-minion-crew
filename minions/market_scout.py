@@ -1,18 +1,17 @@
-"""Bot 1 — Market Scout
-
-Pulls live quotes, volume, and catalysts before open every day.
-"""
+from data_feed import get_quotes
+from minions.news_wire import best_catalyst_score
 
 
-def scan(tickers: list[str]) -> dict:
-    """Return latest quote, volume, and any catalyst within 48h for each ticker."""
-    results = {}
+def scan(tickers):
+    """Live market snapshot: quotes + catalyst scores for a ticker list."""
+    out = []
     for t in tickers:
-        results[t] = {
-            "ticker": t,
-            "last": None,          # wire to market data feed
-            "volume": None,
-            "catalyst": None,      # wire to news wire
-            "hours_since": None,
-        }
-    return results
+        q = get_quotes(t)
+        if q:
+            out.append({"ticker": t, "quote": q, "catalyst": best_catalyst_score(t)})
+    return out
+
+
+if __name__ == "__main__":
+    for row in scan(["SPY", "QQQ", "IWM"]):
+        print(row)
