@@ -20,14 +20,23 @@ One score, zero approvals. Catalyst worth up to 40 points, liquidity 30, tape 30
 
 Miss any one and Zed sits on his hands — but the checklist ranks, it doesn't gate.
 
-## Minion Roles
+## Minion Roles & Fork Sources
 
-- Bot 1 — Market Scout: live quotes, volume, catalysts before open.
-- Bot 2 — Research: deep dives on flagged names — debt, shorts, catalysts.
-- Bot 3 — Risk: watches positions, flags broken theses and stops.
-- Bot 4 — News Wire: CPI, earnings, Fed, anything moving the tape inside the hour.
+| Minion | File | Fork Source | What It Does |
+|--------|------|-------------|-------------|
+| Bot 1 — Market Scout | `minions/market_scout.py` | Calls `data_feed.py` + `news_wire.py` | Live quotes, volume, catalysts before open |
+| Bot 2 — Research | `minions/research.py` | Calls `data_feed.py` + `news_wire.py` | Deep dives on flagged names — debt, shorts, catalysts |
+| Bot 3 — Risk | `minions/risk.py` | Native logic + position-size cap + daily loss kill switch | Watches positions, flags broken theses and stops |
+| Bot 4 — News Wire | `minions/news_wire.py` | 7 sources: Benzinga, MarketWatch, CNBC, Motley Fool, SEC EDGAR + Google News/Yahoo RSS | CPI, earnings, Fed, anything moving the tape inside the hour |
+| Bot 5 — Scalper | `minions/scalper_bot.py` | LumiBot strategy patterns (github.com/Lumiwealth/lumibot) | Dedicated intraday scalper: score gate at 70, 1% position sizing, 0.8% take-profit, 0.4% stop, Robinhood marketable-limit entry with GTC brackets |
 
-I hold the loop: assign, verify, kill anything unverified. Travis is the human in the loop — the one who says go.
+## External Forks (reference, not wired in)
+
+- **LumiBot** — github.com/killerO311/lumibot — stock trading with AI agent runtime (researcher, bull, bear, portfolio manager). 12 brokers incl. Schwab, Tradier, Alpaca, IBKR.
+- **hftbacktest** — github.com/killerO311/hftbacktest — tick-level backtesting with queue position and latency modeling. Live on Binance/Bybit (untested per authors).
+- **Public-Portfolio-Challenge** — github.com/killerO311/Public-Portfolio-Challenge (austin-starks) — Fable 5 momentum options bot, +20% in 10 weeks, full campaign log.
+- **temple-stuart-accounting** — github.com/killerO311/temple-stuart-accounting (Temple-Stuart) — $400 Robinhood bot grew to $1,200 over 8 months.
+- **claude-trading-desk** — github.com/killerO311/claude-trading-desk (aabrole) — free end-to-end stack: build, backtest, paper-trade Claude bots. 67 files, plugin with strategy/oracle/paper-trading/dashboard skills, opening-range-breakout example.
 
 ## Stack
 
@@ -35,11 +44,11 @@ TradingAgents thinks. NautilusTrader executes and logs. OpenAlgo bridges to Robi
 
 ## Warning
 
-None of these are turnkey. You're assembling, not installing.
+None of these are turnkey. You're assembling, not installing. Backtest before any live capital touches the scalper's `auto_place` flag.
 
 ## Next Steps
 
-1. Clone TradingAgents: https://github.com/TauricResearch/TradingAgents
-2. Wire NautilusTrader as the execution backend.
-3. Connect OpenAlgo to Robinhood.
-4. Backtest the scoring engine before any live capital.
+1. Wire `scalper_bot.py` `auto_place=True` with Zed's account number when ready for real orders.
+2. Backtest the scoring engine on historical data before scaling position sizes.
+3. Add a sixth minion: options flow scanner (unusual options activity as catalyst signal).
+4. Connect the news wire's EDGAR feed to auto-flag 8-K filings as instant catalysts.
